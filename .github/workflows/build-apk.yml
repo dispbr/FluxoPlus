@@ -33,11 +33,11 @@ jobs:
         run: gradle assembleDebug --stacktrace
 
       - name: Preparar APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk FluxoPlus-1.0.1.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk FluxoPlus-1.0.2.apk
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
-          name: FluxoPlus-APK-1.0.1
-          path: FluxoPlus-1.0.1.apk
+          name: FluxoPlus-APK-1.0.2
+          path: FluxoPlus-1.0.2.apk
           retention-days: 30
