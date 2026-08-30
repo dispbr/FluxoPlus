@@ -32,7 +32,7 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     private static final int FILE_CHOOSER = 1001;
     private static final int PDF_CHOOSER = 2002;
-    private static final String APP_VERSION = "1.1.0";
+    private static final String APP_VERSION = "1.1.1";
     private SharedPreferences prefs;
     private boolean biometricPromptOpen = false;
     private String pendingPdfBank = "nubank";
@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 view.evaluateJavascript("if(typeof refreshNativeInfo==='function')refreshNativeInfo();", null);
+                injectLoginMessages();
                 if (prefs.getBoolean("biometric_enabled", false) && !biometricPromptOpen) {
                     promptBiometric(false);
                 }
@@ -83,23 +84,21 @@ public class MainActivity extends Activity {
         webView.loadUrl("file:///android_asset/index.html");
     }
 
+    private void injectLoginMessages() {
+        String js = "(function(){" +
+                "var m=document.getElementById('loginMsg');if(m){m.style.minHeight='20px';}" +
+                "window.onBiometricError=function(msg){var e=document.getElementById('loginMsg');if(e){e.textContent=msg||'Não foi possível autenticar pela biometria. Use o PIN para entrar.';e.style.color='#b42318';e.style.fontWeight='700';}};" +
+                "var old=window.onBiometricLogin;window.onBiometricLogin=function(){var e=document.getElementById('loginMsg');if(e){e.textContent='Biometria reconhecida. Entrando...';e.style.color='#067647';e.style.fontWeight='600';}setTimeout(function(){if(old)old();else{var l=document.getElementById('login');if(l)l.classList.add('hidden');if(typeof render==='function')render();}},100);};" +
+                "})();";
+        webView.evaluateJavascript(js, null);
+    }
+
     public class AndroidBridge {
-        @JavascriptInterface
-        public String getVersion() { return APP_VERSION; }
-
-        @JavascriptInterface
-        public boolean isBiometricEnabled() { return prefs.getBoolean("biometric_enabled", false); }
-
-        @JavascriptInterface
-        public void enableBiometric() { runOnUiThread(() -> promptBiometric(true)); }
-
-        @JavascriptInterface
-        public void requestBiometricLogin() { runOnUiThread(() -> promptBiometric(false)); }
-
-        @JavascriptInterface
-        public void pickCreditCardPdf(String bank) {
-            runOnUiThread(() -> openPdfPicker(bank));
-        }
+        @JavascriptInterface public String getVersion() { return APP_VERSION; }
+        @JavascriptInterface public boolean isBiometricEnabled() { return prefs.getBoolean("biometric_enabled", false); }
+        @JavascriptInterface public void enableBiometric() { runOnUiThread(() -> promptBiometric(true)); }
+        @JavascriptInterface public void requestBiometricLogin() { runOnUiThread(() -> promptBiometric(false)); }
+        @JavascriptInterface public void pickCreditCardPdf(String bank) { runOnUiThread(() -> openPdfPicker(bank)); }
     }
 
     private void openPdfPicker(String bank) {
@@ -153,9 +152,13 @@ public class MainActivity extends Activity {
     }
 
     private void promptBiometric(boolean enabling) {
-        if (biometricPromptOpen) return;
+        if (biometricPromptOpen) {
+            if (!enabling) sendBiometricLoginError("A autenticação biométrica já está aberta.");
+            return;
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            if (enabling) sendBiometricEnabled(false, "Biometria requer Android 9 ou superior.");
+            String msg = "Biometria requer Android 9 ou superior.";
+            if (enabling) sendBiometricEnabled(false, msg); else sendBiometricLoginError(msg + " Use o PIN para entrar.");
             return;
         }
         try {
@@ -167,6 +170,7 @@ public class MainActivity extends Activity {
                     .setNegativeButton("Usar PIN", getMainExecutor(), (dialog, which) -> {
                         biometricPromptOpen = false;
                         if (enabling) sendBiometricEnabled(false, "Ativação cancelada.");
+                        else sendBiometricLoginError("Autenticação cancelada. Use o PIN para entrar.");
                     })
                     .build();
             prompt.authenticate(signal, getMainExecutor(), new BiometricPrompt.AuthenticationCallback() {
@@ -181,20 +185,31 @@ public class MainActivity extends Activity {
                         webView.evaluateJavascript("if(typeof window.onBiometricLogin==='function')window.onBiometricLogin();", null);
                     }
                 }
+
                 @Override
                 public void onAuthenticationError(int errorCode, CharSequence errString) {
                     super.onAuthenticationError(errorCode, errString);
                     biometricPromptOpen = false;
-                    if (enabling) sendBiometricEnabled(false, errString == null ? "Não foi possível usar a biometria." : errString.toString());
+                    String msg = (errString == null || errString.length() == 0) ? "Não foi possível usar a biometria." : errString.toString();
+                    if (enabling) sendBiometricEnabled(false, msg);
+                    else sendBiometricLoginError(msg + " Use o PIN para entrar.");
+                }
+
+                @Override
+                public void onAuthenticationFailed() {
+                    super.onAuthenticationFailed();
+                    if (!enabling) sendBiometricLoginError("Biometria não reconhecida. Tente novamente ou use o PIN.");
                 }
             });
         } catch (SecurityException e) {
             biometricPromptOpen = false;
             prefs.edit().putBoolean("biometric_enabled", false).apply();
-            if (enabling) sendBiometricEnabled(false, "Permissão de biometria indisponível.");
+            String msg = "Permissão de biometria indisponível.";
+            if (enabling) sendBiometricEnabled(false, msg); else sendBiometricLoginError(msg + " Use o PIN para entrar.");
         } catch (Exception e) {
             biometricPromptOpen = false;
-            if (enabling) sendBiometricEnabled(false, "Biometria indisponível neste aparelho.");
+            String msg = "Biometria indisponível neste aparelho.";
+            if (enabling) sendBiometricEnabled(false, msg); else sendBiometricLoginError(msg + " Use o PIN para entrar.");
         }
     }
 
@@ -203,15 +218,19 @@ public class MainActivity extends Activity {
         webView.evaluateJavascript("if(typeof window.onBiometricEnabled==='function')window.onBiometricEnabled(" + ok + ",'" + safe + "');", null);
     }
 
+    private void sendBiometricLoginError(String message) {
+        String safe = message == null ? "" : message.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ");
+        webView.evaluateJavascript("if(typeof window.onBiometricError==='function')window.onBiometricError('" + safe + "');", null);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PDF_CHOOSER) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 Uri uri = data.getData();
-                try {
-                    getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } catch (Exception ignored) {}
+                try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+                catch (Exception ignored) {}
                 readPdf(uri, pendingPdfBank);
             } else {
                 sendPdfError("Seleção de PDF cancelada.");
@@ -232,7 +251,6 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) webView.goBack();
-        else super.onBackPressed();
+        if (webView != null && webView.canGoBack()) webView.goBack(); else super.onBackPressed();
     }
 }
