@@ -14,6 +14,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private static final int FILE_CHOOSER = 1001;
+    private static final String APP_VERSION = "1.0.2";
     private int bottomInsetPx = 0;
 
     @Override
@@ -25,8 +26,6 @@ public class MainActivity extends Activity {
         webView.setOnApplyWindowInsetsListener((v, insets) -> {
             int top = insets.getSystemWindowInsetTop();
             bottomInsetPx = insets.getSystemWindowInsetBottom();
-            // Mantém o conteúdo abaixo da barra de status.
-            // A barra de navegação inferior é tratada dentro do HTML com o inset real do aparelho.
             v.setPadding(0, top, 0, 0);
             applyWebMetrics();
             return insets;
@@ -69,7 +68,7 @@ public class MainActivity extends Activity {
     private void applyWebMetrics() {
         if (webView == null) return;
         final int inset = bottomInsetPx;
-        final String version = BuildConfig.VERSION_NAME;
+        final String version = APP_VERSION;
         webView.post(() -> webView.evaluateJavascript(
             "document.documentElement.style.setProperty('--android-bottom-inset','" + inset + "px');" +
             "var n=document.querySelector('nav');if(n){n.style.bottom='calc(" + inset + "px + 8px)';n.style.left='10px';n.style.right='10px';n.style.borderRadius='18px';n.style.boxShadow='0 4px 18px #0002';}" +
