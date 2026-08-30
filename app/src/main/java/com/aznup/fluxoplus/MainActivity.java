@@ -32,7 +32,7 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     private static final int FILE_CHOOSER = 1001;
     private static final int PDF_CHOOSER = 2002;
-    private static final String APP_VERSION = "1.1.1";
+    private static final String APP_VERSION = "1.1.2";
     private SharedPreferences prefs;
     private boolean biometricPromptOpen = false;
     private String pendingPdfBank = "nubank";
@@ -58,8 +58,8 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                injectLoginFix();
                 view.evaluateJavascript("if(typeof refreshNativeInfo==='function')refreshNativeInfo();", null);
-                injectLoginMessages();
                 if (prefs.getBoolean("biometric_enabled", false) && !biometricPromptOpen) {
                     promptBiometric(false);
                 }
@@ -84,11 +84,13 @@ public class MainActivity extends Activity {
         webView.loadUrl("file:///android_asset/index.html");
     }
 
-    private void injectLoginMessages() {
+    private void injectLoginFix() {
         String js = "(function(){" +
-                "var m=document.getElementById('loginMsg');if(m){m.style.minHeight='20px';}" +
-                "window.onBiometricError=function(msg){var e=document.getElementById('loginMsg');if(e){e.textContent=msg||'Não foi possível autenticar pela biometria. Use o PIN para entrar.';e.style.color='#b42318';e.style.fontWeight='700';}};" +
-                "var old=window.onBiometricLogin;window.onBiometricLogin=function(){var e=document.getElementById('loginMsg');if(e){e.textContent='Biometria reconhecida. Entrando...';e.style.color='#067647';e.style.fontWeight='600';}setTimeout(function(){if(old)old();else{var l=document.getElementById('login');if(l)l.classList.add('hidden');if(typeof render==='function')render();}},100);};" +
+                "function msg(t,c){var e=document.getElementById('loginMsg');if(e){e.textContent=t||'';e.style.color=c||'#b42318';e.style.fontWeight='700';e.style.minHeight='20px';}}" +
+                "window.enter=function(){try{var p=document.getElementById('pin');var v=p?p.value.trim():'';if(!v||v.length<4){msg('Digite seu PIN com pelo menos 4 caracteres.');return;}var saved=localStorage.getItem('fluxo_pin');if(!saved){localStorage.setItem('fluxo_pin',v);msg('PIN criado com sucesso.','#067647');}else if(saved!==v){msg('PIN incorreto. Tente novamente.');if(p){p.value='';p.focus();}return;}var l=document.getElementById('login');if(l)l.classList.add('hidden');if(typeof render==='function')render();}catch(ex){msg('Erro no login: '+(ex&&ex.message?ex.message:'falha desconhecida'));}};" +
+                "var p=document.getElementById('pin');if(p&&!p.dataset.loginFix){p.dataset.loginFix='1';p.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();window.enter();}});}" +
+                "window.onBiometricError=function(t){msg(t||'Não foi possível autenticar pela biometria. Use o PIN para entrar.');};" +
+                "window.onBiometricLogin=function(){msg('Biometria reconhecida. Entrando...','#067647');setTimeout(function(){var l=document.getElementById('login');if(l)l.classList.add('hidden');if(typeof render==='function')render();},100);};" +
                 "})();";
         webView.evaluateJavascript(js, null);
     }
@@ -191,8 +193,7 @@ public class MainActivity extends Activity {
                     super.onAuthenticationError(errorCode, errString);
                     biometricPromptOpen = false;
                     String msg = (errString == null || errString.length() == 0) ? "Não foi possível usar a biometria." : errString.toString();
-                    if (enabling) sendBiometricEnabled(false, msg);
-                    else sendBiometricLoginError(msg + " Use o PIN para entrar.");
+                    if (enabling) sendBiometricEnabled(false, msg); else sendBiometricLoginError(msg + " Use o PIN para entrar.");
                 }
 
                 @Override
