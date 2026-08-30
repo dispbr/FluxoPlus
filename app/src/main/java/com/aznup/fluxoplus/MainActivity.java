@@ -2,8 +2,13 @@ package com.aznup.fluxoplus;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.hardware.biometrics.BiometricPrompt;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -14,23 +19,16 @@ public class MainActivity extends Activity {
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private static final int FILE_CHOOSER = 1001;
-    private static final String APP_VERSION = "1.0.2";
-    private int bottomInsetPx = 0;
+    private static final String APP_VERSION = "1.0.3";
+    private SharedPreferences prefs;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        prefs = getSharedPreferences("fluxoplus_native", MODE_PRIVATE);
         webView = findViewById(R.id.webView);
-        webView.setOnApplyWindowInsetsListener((v, insets) -> {
-            int top = insets.getSystemWindowInsetTop();
-            bottomInsetPx = insets.getSystemWindowInsetBottom();
-            v.setPadding(0, top, 0, 0);
-            applyWebMetrics();
-            return insets;
-        });
-        webView.requestApplyInsets();
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -39,13 +37,18 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
 
+        webView.addJavascriptInterface(new AndroidBridge(), "AndroidBridge");
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                applyWebMetrics();
+                view.evaluateJavascript("if(typeof refreshNativeInfo==='function')refreshNativeInfo();", null);
+                if (prefs.getBoolean("biometric_enabled", false)) {
+                    promptBiometric(false);
+                }
             }
         });
+
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
@@ -65,20 +68,66 @@ public class MainActivity extends Activity {
         webView.loadUrl("file:///android_asset/index.html");
     }
 
-    private void applyWebMetrics() {
-        if (webView == null) return;
-        final int inset = bottomInsetPx;
-        final String version = APP_VERSION;
-        webView.post(() -> webView.evaluateJavascript(
-            "document.documentElement.style.setProperty('--android-bottom-inset','" + inset + "px');" +
-            "var n=document.querySelector('nav');if(n){n.style.bottom='calc(" + inset + "px + 8px)';n.style.left='10px';n.style.right='10px';n.style.borderRadius='18px';n.style.boxShadow='0 4px 18px #0002';}" +
-            "var f=document.querySelector('.fab');if(f){f.style.bottom='calc(" + inset + "px + 94px)';}" +
-            "var m=document.querySelector('main');if(m){m.style.paddingBottom='calc(" + inset + "px + 130px)';}" +
-            "var h=document.querySelector('header');var e=document.getElementById('appVersion');" +
-            "if(h&&!e){e=document.createElement('span');e.id='appVersion';e.style.cssText='position:absolute;right:14px;top:18px;background:#ffffff22;border:1px solid #ffffff33;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800;color:#fff;white-space:nowrap';h.appendChild(e);}" +
-            "if(e){e.textContent='Versão " + version + "';}",
-            null
-        ));
+    public class AndroidBridge {
+        @JavascriptInterface
+        public String getVersion() {
+            return APP_VERSION;
+        }
+
+        @JavascriptInterface
+        public boolean isBiometricEnabled() {
+            return prefs.getBoolean("biometric_enabled", false);
+        }
+
+        @JavascriptInterface
+        public void enableBiometric() {
+            runOnUiThread(() -> promptBiometric(true));
+        }
+
+        @JavascriptInterface
+        public void requestBiometricLogin() {
+            runOnUiThread(() -> promptBiometric(false));
+        }
+    }
+
+    private void promptBiometric(boolean enabling) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            sendBiometricEnabled(false, "Biometria requer Android 9 ou superior.");
+            return;
+        }
+
+        CancellationSignal cancellationSignal = new CancellationSignal();
+        BiometricPrompt prompt = new BiometricPrompt.Builder(this)
+                .setTitle(enabling ? "Ativar biometria" : "Entrar no Fluxo+")
+                .setSubtitle(enabling ? "Confirme sua biometria para ativar" : "Use sua biometria cadastrada no aparelho")
+                .setNegativeButton("Usar PIN", getMainExecutor(), (dialog, which) -> {
+                    if (enabling) sendBiometricEnabled(false, "Ativação cancelada.");
+                })
+                .build();
+
+        prompt.authenticate(cancellationSignal, getMainExecutor(), new BiometricPrompt.AuthenticationCallback() {
+            @Override
+            public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                super.onAuthenticationSucceeded(result);
+                if (enabling) {
+                    prefs.edit().putBoolean("biometric_enabled", true).apply();
+                    sendBiometricEnabled(true, "Biometria ativada.");
+                } else {
+                    webView.evaluateJavascript("if(typeof window.onBiometricLogin==='function')window.onBiometricLogin();", null);
+                }
+            }
+
+            @Override
+            public void onAuthenticationError(int errorCode, CharSequence errString) {
+                super.onAuthenticationError(errorCode, errString);
+                if (enabling) sendBiometricEnabled(false, errString == null ? "Falha na biometria." : errString.toString());
+            }
+        });
+    }
+
+    private void sendBiometricEnabled(boolean ok, String message) {
+        String safe = message == null ? "" : message.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ");
+        webView.evaluateJavascript("if(typeof window.onBiometricEnabled==='function')window.onBiometricEnabled(" + ok + ",'" + safe + "');", null);
     }
 
     @Override
