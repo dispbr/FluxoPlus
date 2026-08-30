@@ -10,8 +10,8 @@ android {
         applicationId 'com.aznup.fluxoplus'
         minSdk 26
         targetSdk 35
-        versionCode 6
-        versionName '1.0.5'
+        versionCode 7
+        versionName '1.1.0'
     }
 
     buildTypes {
@@ -20,4 +20,8 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+}
+
+dependencies {
+    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
 }
