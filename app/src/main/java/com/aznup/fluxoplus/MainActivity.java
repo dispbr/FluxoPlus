@@ -32,9 +32,10 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     private static final int FILE_CHOOSER = 1001;
     private static final int PDF_CHOOSER = 2002;
-    private static final String APP_VERSION = "1.1.2";
+    private static final String APP_VERSION = "1.1.4";
     private SharedPreferences prefs;
     private boolean biometricPromptOpen = false;
+    private boolean pdfBoxInitialized = false;
     private String pendingPdfBank = "nubank";
     private final ExecutorService pdfExecutor = Executors.newSingleThreadExecutor();
 
@@ -42,7 +43,6 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        PDFBoxResourceLoader.init(getApplicationContext());
         prefs = getSharedPreferences("fluxoplus_native", MODE_PRIVATE);
         webView = findViewById(R.id.webView);
 
@@ -60,9 +60,6 @@ public class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 injectLoginFix();
                 view.evaluateJavascript("if(typeof refreshNativeInfo==='function')refreshNativeInfo();", null);
-                if (prefs.getBoolean("biometric_enabled", false) && !biometricPromptOpen) {
-                    promptBiometric(false);
-                }
             }
         });
 
@@ -87,10 +84,10 @@ public class MainActivity extends Activity {
     private void injectLoginFix() {
         String js = "(function(){" +
                 "function msg(t,c){var e=document.getElementById('loginMsg');if(e){e.textContent=t||'';e.style.color=c||'#b42318';e.style.fontWeight='700';e.style.minHeight='20px';}}" +
-                "window.enter=function(){try{var p=document.getElementById('pin');var v=p?p.value.trim():'';if(!v||v.length<4){msg('Digite seu PIN com pelo menos 4 caracteres.');return;}var saved=localStorage.getItem('fluxo_pin');if(!saved){localStorage.setItem('fluxo_pin',v);msg('PIN criado com sucesso.','#067647');}else if(saved!==v){msg('PIN incorreto. Tente novamente.');if(p){p.value='';p.focus();}return;}var l=document.getElementById('login');if(l)l.classList.add('hidden');if(typeof render==='function')render();}catch(ex){msg('Erro no login: '+(ex&&ex.message?ex.message:'falha desconhecida'));}};" +
+                "window.enter=function(){try{var p=document.getElementById('pin');var v=p?p.value.trim():'';if(!v||v.length<4){msg('Digite seu PIN com pelo menos 4 caracteres.');return;}var saved=localStorage.getItem('fluxo_pin');if(!saved){localStorage.setItem('fluxo_pin',v);msg('PIN criado com sucesso.','#067647');}else if(saved!==v){msg('PIN incorreto. Tente novamente.');if(p){p.value='';p.focus();}return;}var l=document.getElementById('login');if(l)l.classList.add('hidden');try{if(typeof render==='function')render();}catch(ex){msg('Login realizado, mas houve erro ao carregar os dados.','#b54708');}}catch(ex){msg('Erro no login: '+(ex&&ex.message?ex.message:'falha desconhecida'));}};" +
                 "var p=document.getElementById('pin');if(p&&!p.dataset.loginFix){p.dataset.loginFix='1';p.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();window.enter();}});}" +
                 "window.onBiometricError=function(t){msg(t||'Não foi possível autenticar pela biometria. Use o PIN para entrar.');};" +
-                "window.onBiometricLogin=function(){msg('Biometria reconhecida. Entrando...','#067647');setTimeout(function(){var l=document.getElementById('login');if(l)l.classList.add('hidden');if(typeof render==='function')render();},100);};" +
+                "window.onBiometricLogin=function(){msg('Biometria reconhecida. Entrando...','#067647');setTimeout(function(){var l=document.getElementById('login');if(l)l.classList.add('hidden');try{if(typeof render==='function')render();}catch(ex){}},100);};" +
                 "})();";
         webView.evaluateJavascript(js, null);
     }
@@ -101,6 +98,13 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void enableBiometric() { runOnUiThread(() -> promptBiometric(true)); }
         @JavascriptInterface public void requestBiometricLogin() { runOnUiThread(() -> promptBiometric(false)); }
         @JavascriptInterface public void pickCreditCardPdf(String bank) { runOnUiThread(() -> openPdfPicker(bank)); }
+    }
+
+    private synchronized void ensurePdfBox() {
+        if (!pdfBoxInitialized) {
+            PDFBoxResourceLoader.init(getApplicationContext());
+            pdfBoxInitialized = true;
+        }
     }
 
     private void openPdfPicker(String bank) {
@@ -117,15 +121,18 @@ public class MainActivity extends Activity {
 
     private void readPdf(Uri uri, String bank) {
         pdfExecutor.execute(() -> {
-            try (InputStream input = getContentResolver().openInputStream(uri);
-                 PDDocument document = PDDocument.load(input)) {
-                PDFTextStripper stripper = new PDFTextStripper();
-                stripper.setSortByPosition(true);
-                String text = stripper.getText(document);
-                String name = getDisplayName(uri);
-                String js = "if(typeof window.onPdfText==='function')window.onPdfText(" +
-                        JSONObject.quote(bank) + "," + JSONObject.quote(text) + "," + JSONObject.quote(name) + ");";
-                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            try {
+                ensurePdfBox();
+                try (InputStream input = getContentResolver().openInputStream(uri);
+                     PDDocument document = PDDocument.load(input)) {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    stripper.setSortByPosition(true);
+                    String text = stripper.getText(document);
+                    String name = getDisplayName(uri);
+                    String js = "if(typeof window.onPdfText==='function')window.onPdfText(" +
+                            JSONObject.quote(bank) + "," + JSONObject.quote(text) + "," + JSONObject.quote(name) + ");";
+                    runOnUiThread(() -> webView.evaluateJavascript(js, null));
+                }
             } catch (Exception e) {
                 runOnUiThread(() -> sendPdfError("Não foi possível ler este PDF. Verifique se a fatura não está protegida por senha."));
             }
@@ -154,10 +161,7 @@ public class MainActivity extends Activity {
     }
 
     private void promptBiometric(boolean enabling) {
-        if (biometricPromptOpen) {
-            if (!enabling) sendBiometricLoginError("A autenticação biométrica já está aberta.");
-            return;
-        }
+        if (biometricPromptOpen) return;
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             String msg = "Biometria requer Android 9 ou superior.";
             if (enabling) sendBiometricEnabled(false, msg); else sendBiometricLoginError(msg + " Use o PIN para entrar.");
@@ -193,7 +197,8 @@ public class MainActivity extends Activity {
                     super.onAuthenticationError(errorCode, errString);
                     biometricPromptOpen = false;
                     String msg = (errString == null || errString.length() == 0) ? "Não foi possível usar a biometria." : errString.toString();
-                    if (enabling) sendBiometricEnabled(false, msg); else sendBiometricLoginError(msg + " Use o PIN para entrar.");
+                    if (enabling) sendBiometricEnabled(false, msg);
+                    else sendBiometricLoginError(msg + " Use o PIN para entrar.");
                 }
 
                 @Override
