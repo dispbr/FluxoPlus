@@ -1,0 +1,1 @@
+# Regras ProGuard do FluxoPlus
